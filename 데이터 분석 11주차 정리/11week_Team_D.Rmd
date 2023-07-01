@@ -1,0 +1,222 @@
+---
+title: "11week 2"
+author: "Team D"
+date: '2022-05-22'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library(caret)
+library(caretEnsemble)
+library(psych)
+library(rpart)
+library(ggplot2)
+library(rattle)
+library(rpart.plot)
+library(Hmisc)
+library(Amelia)
+library(GGally)
+library(MASS)
+library(klaR)
+library(mice)
+library(randomForest)
+library(tidyverse)
+library(nnet)
+library(kernlab)
+library(car)
+library(gvlma)
+library(lm.beta)
+library(e1071)
+library(corrplot)
+library(dplyr)
+library(tidyverse)
+library(rpart)
+library(caret)
+library(RColorBrewer)
+library(rattle)
+library(party)
+library(rpart.plot)
+library(partykit)
+library(hardhat)
+library(naivebayes)
+library(caretEnsemble)
+library(psych)
+library(Amelia)
+library(mice)
+library(GGally)
+library(randomForest)
+library(e1071)
+library(klaR)
+library(neuralnet)
+library(nnet)
+library(ROCR)
+library(corrplot)
+library(leaps)
+library(broom)
+library(gridExtra)
+library(sampling)
+library(stringr)
+library(arules)
+library(arulesViz)
+install.packages("arules")
+install.packages("arulesViz")
+
+
+```
+
+
+```{r preprocess}
+
+
+# R script 있는 곳에 파일이 있다고 가정하고, wd 설정
+CURRENT_WORKING_DIR <- dirname(rstudioapi::getActiveDocumentContext()$path)
+setwd(CURRENT_WORKING_DIR)
+getwd()
+
+# 파일 읽어오기
+data <- read.csv( file = "전라북도_보건환경연구원 수질측정망_20220228.csv", header = TRUE, fileEncoding = "euc-kr" )
+
+View(data)
+
+
+#필요없는 col 제거
+data[["연도"]] <- NULL
+data[["월"]] <- NULL
+data[["시도.명"]] <- NULL
+data[["시군구.명"]] <- NULL
+data[["읍면동.명"]] <- NULL
+data[["동리.명"]] <- NULL
+data[["측정소.명"]] <- NULL
+data[["수심"]] <- NULL
+str(data)
+
+#수치형 변수들을 최소, 평균, 최대값을 고려해 ordered factor형으로 변환
+apply(data, 2, min)
+apply(data, 2, mean)
+apply(data, 2, max)
+data[[ "수온"]] <- ordered(cut(data[[ "수온"]], c(0,10,20,30,40)),
+                         labels = c("0", "1", "2", "3"))
+data[[ "수소이온농도"]] <- ordered(cut(data[[ "수소이온농도"]], c(6,7,8,9,10)),
+                             labels = c("0", "1", "2", "3"))
+data[[ "용존산소"]] <- ordered(cut(data[[ "용존산소"]], c(0,5,10,15,21)),
+                           labels = c("0", "1", "2", "3"))
+data[[ "생화학적산소요구량"]] <- ordered(cut(data[[ "생화학적산소요구량"]],
+                                    c(0,1,2,3,50)), labels = c("0", "1", "2", "3"))
+data[[ "화학적산소요구량"]] <- ordered(cut(data[[ "화학적산소요구량"]],
+                                   c(0,3,6,9,52)), labels = c("0", "1", "2", "3"))
+data[[ "부유물질"]] <- ordered(cut(data[[ "부유물질"]], c(0,7,14,21,200)),
+                           labels = c("0", "1", "2", "3"))
+data[[ "총질소"]] <- ordered(cut(data[[ "총질소"]], c(0,5,10,15,21)),
+                          labels = c("0", "1", "2", "3"))
+data[[ "총인"]] <- ordered(cut(data[[ "총인"]], c(0,0.03,0.07,0.09,1.2)),
+                         labels = c("0", "1", "2", "3"))
+
+ds<-as(data, "transactions")
+class(ds)
+inspect(head(ds, 3))
+
+
+```
+
+
+
+## Including Plots
+```{r rule }
+
+
+ecl <- eclat (ds,
+              parameter = list(supp = 0.1,
+                               minlen = 2,
+                               maxlen = 4)) 
+
+inspect(sort(ecl)[1:10])
+
+itemFrequencyPlot(ds, 
+                  topN=10, 
+                  type="absolute", 
+                  main="Item Frequency")
+
+#최소 support를 0.3, confidence를 0.5로 설정
+rules <- apriori (ds, 
+                  parameter = list(supp = 0.3, 
+                                   conf = 0.5,
+                                   minlen=2,
+                                   maxlen=4)) 
+rules_conf <- sort (rules, by="confidence", decreasing=TRUE)                  
+inspect(head(rules_conf)) 
+
+#최소 support를 0.3, confidence를 0.9로 설정
+rules <- apriori (ds, 
+                  parameter = list(supp = 0.3, 
+                                   conf = 0.9,
+                                   minlen=2,
+                                   maxlen=4)) 
+rules_lift <- sort (rules, by="lift", decreasing=TRUE)                  
+inspect(head(rules_lift)) 
+
+#중첩된 rule subset 제거하기
+length(rules)
+rules
+subsetRules <- which(rowSums(is.subset(rules, rules, proper = T)) > 1) 
+length(subsetRules)  
+rules <- rules[-subsetRules] 
+length(rules)
+
+#정해진 값과 관련된 rule 추출
+rules <- apriori(ds, 
+                 parameter = list (supp = 0.3,
+                                   minlen = 2,
+                                   maxlen = 4)) 
+inspect(rules)
+
+#결과값이 용존산소가 나오는 규칙
+rules <- apriori(ds, 
+                 parameter = list (supp = 0.3,
+                                   minlen = 2,
+                                   maxlen = 5),
+                 appearance = list (default="lhs",
+                                    rhs=c("용존산소=0","용존산소=1",
+                                          "용존산소=2")), 
+                 control = list (verbose=F))
+
+rules_conf <- sort (rules, by="confidence", decreasing=TRUE)
+length(rules)
+inspect(head(rules_conf))
+
+
+
+```
+
+```{r prunning model}
+
+
+#사후 가지치기 나무 모델과 rule 비교
+fit <- rpart(용존산소~., data, cp = -1)
+plotcp(fit)
+printcp(fit)
+#0.003로 pruning
+ptree <- prune(fit, cp = 0.003)
+windows()
+fancyRpartPlot(ptree)
+dev.off()
+rpartpred <- predict(ptree, data, type = 'class')
+confusionMatrix(data$용존산소, rpartpred, positive = 'Yes')
+rpart.rules(ptree)
+
+#수온이 2,3이면 용존산소를 1로 판단
+#수온이 0이면 용존산소를 2로판단
+#수온이 1이고 화학적산소요구량과 수소이온농도에 따라 용존산소를 1 or 2로 판단
+
+
+```
+
+```{r final file}
+library(pmml)
+
+write(rules, file = "rules.csv",fileEncoding = "euc-kr" ,sep = ",", col.names = NA)
+write.PMML(rules, file = "rules.xml")
+
+```
+
+

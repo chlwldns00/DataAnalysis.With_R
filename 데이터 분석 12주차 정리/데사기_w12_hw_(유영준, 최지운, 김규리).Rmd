@@ -1,0 +1,314 @@
+```{r}
+library("caret")
+library("grid")
+library("gridExtra")
+library("tidyr")
+library('philentropy')
+library('NbClust')
+library('fpc')
+library('dbscan')
+library('knitr')
+```
+
+```{r}
+# R script 있는 곳에 파일이 있다고 가정하고, wd 설정
+CURRENT_WORKING_DIR <- dirname(rstudioapi::getActiveDocumentContext()$path)
+setwd(CURRENT_WORKING_DIR)
+getwd()
+
+# 파일 읽어오기
+data <- as.data.frame(
+  read.csv(
+    file = "서울시_우리마을가게_상권분석서비스(신_상권_추정매출)_2021년.csv",
+    header = TRUE
+  )
+)
+```
+
+# 데이터 타입 변환
+```{r}
+data$상권_코드_명 <- as.factor(data$상권_코드_명)
+data$서비스_업종_코드_명 <- as.factor(data$서비스_업종_코드_명)
+```
+
+# 변수가 너무 많음 --> 사용할 변수만 두고 제거
+# datapoint 줄이기
+```{r}
+datav1 <- subset(data, data$기준_분기_코드==1)
+datav1 <- datav1[,c('상권_코드_명','서비스_업종_코드_명', '분기당_매출_금액', '연령대_20_매출_금액')]
+```
+
+# 결측치 확인 시 없었음
+# 이상치에 대한 처리는 하지 않음
+# 현재 데이터 셋은 특정 상권에서 얼마의 매출이 발생하는 가를 의미 --> 따라서 이상치를 없엘 경우 해당 상권이 사라짐
+# 즉, 매출이 높은 상권이 사라질 가능성이 있기 때문에 이상치를 제거하지 않음.
+```{r}
+str(datav1)
+
+cat("\n\n")
+
+summary(datav1[3:4])
+
+cat("\n\n")
+
+sum(is.na(datav1))
+```
+
+# 너무 데이터가 커서 잘 안나옴 --> 따라서 상권별로 통합시키기
+```{r}
+datav2 <- as.data.frame(matrix(nrow = length(levels(datav1$상권_코드_명)), ncol = 3))
+
+names(datav2) <- c('상권_코드_명', '분기당_매출_금액', '연령대_20_매출_금액')
+
+datav2$상권_코드_명 <- levels(datav1$상권_코드_명)
+
+for(i in 1:nrow(datav2)){
+  datav2[i,2] = sum(subset(datav1,datav1$상권_코드_명== datav2[i,1])[,3])
+  datav2[i,3] = sum(subset(datav1,datav1$상권_코드_명 == datav2[i,1])[,4])
+}
+sum(is.na(datav2))
+str(datav2)
+cat('\n\n')
+summary(datav2[2:3])
+```
+
+# 데이터 정규화
+```{r}
+# scale before distance
+# % to max value: value / column_max
+datav2[2:3] <- scale(datav2[2:3], center = FALSE, apply(datav2[2:3], MARGIN = 2, FUN = max))
+
+
+str(datav2)
+cat('\n\n')
+summary(datav2[2:3])
+```
+
+# 거리 기반다르게 하여 계층적 군집 분석
+# 2 군집으로 나눈 이유는 시각적으로 확인하였을 때 edge의 길이가 확연하게 길다고 판단되는 경우에 나눔. 따라서 2개로 군집을 설정
+```{r}
+# distance in stats package 
+hc_eu <- hclust(dist(datav2, method = "euclidean", diag = TRUE), 
+             method = "centroid")
+hc_eu
+plot(hc_eu)
+rect.hclust(hc_eu, k=2)
+```
+# 맨하탄 거리 기반 측정
+```{r}
+hc_man <- hclust(dist(datav2, method = "manhattan", diag = TRUE), 
+             method = "centroid")
+hc_man
+plot(hc_man)
+rect.hclust(hc_man, k=2)
+```
+# 민노스키 거리 기반 측정
+```{r}
+hc_min <- hclust(dist(datav2, method = "minkowski", diag = TRUE), 
+             method = "centroid")
+hc_min
+plot(hc_min)
+rect.hclust(hc_min, k=2)
+```
+# 거리에 따른 분류 결과 결국 같은 분류 결과가 나오는 것을 확인 할 수 있음
+```{r}
+cl_eu.k <- cutree(hc_eu, k = 2)  # k = no of clusters
+table(cl_eu.k)
+
+cl_man.k <- cutree(hc_man, k = 2)  # k = no of clusters
+table(cl_man.k)
+
+cl_min.k <- cutree(hc_min, k = 2)  # k = no of clusters
+table(cl_min.k)
+```
+
+# K-means clustering
+# 군집의 개수를 정하기
+```{r}
+# Determine K
+nc <- NbClust(datav2[2:3], min.nc=2, max.nc=15, method="kmeans")
+par(mfrow=c(1,1))
+barplot(table(nc$Best.n[1,]),
+        xlab="Numer of Clusters", ylab="Number of Criteria",
+        main="Number of Clusters Chosen")
+
+# WithinSS - within sum of squares
+wssplot <- function(data, nc=15){
+  wss <- (nrow(data)-1)*sum(apply(data,2,var)) # K = 1, Total SS 
+  for (i in 2:nc){
+    set.seed(2022)
+    wss[i] <- sum(kmeans(data, centers=i)$withinss)}
+  plot(1:nc, wss, type="b", xlab="Number of Clusters",
+       ylab="Within groups sum of squares",
+       main = 'Learning Curve K vs Withinss')
+  }
+
+wssplot(datav2[2:3])
+```
+
+## 결과적으로 그래프에서 기울기가 확 바뀌는 k값을 선택
+## 학습 곡선에서 k=2 이후로 변화가 적음
+## 최적의 선택 결과는 2개의 군집으로 값을 설정
+
+# 시드 4개로 바꾸어서 프로토 타입에 따른 차이를 알아봄
+# 군집을 2개로 나누었을 때는 딱히 시드에 따른 차이가 나오지 않음
+```{r}
+set.seed(1)
+datav2.kmeans <- kmeans(datav2[2:3], centers = 2, iter.max = 10000)
+datav2.kmeans$centers
+
+datav2$cluster <- as.factor(datav2.kmeans$cluster)
+qplot(연령대_20_매출_금액, 분기당_매출_금액,colour = cluster, data = datav2)
+
+set.seed(2)
+datav2.kmeans <- kmeans(datav2[2:3], centers = 2, iter.max = 10000)
+datav2.kmeans$centers
+
+datav2$cluster <- as.factor(datav2.kmeans$cluster)
+qplot(연령대_20_매출_금액, 분기당_매출_금액,colour = cluster, data = datav2)
+
+set.seed(3)
+datav2.kmeans <- kmeans(datav2[2:3], centers = 2, iter.max = 10000)
+datav2.kmeans$centers
+
+datav2$cluster <- as.factor(datav2.kmeans$cluster)
+qplot(연령대_20_매출_금액, 분기당_매출_금액,colour = cluster, data = datav2)
+
+set.seed(4)
+datav2.kmeans <- kmeans(datav2[2:3], centers = 2, iter.max = 10000)
+datav2.kmeans$centers
+
+datav2$cluster <- as.factor(datav2.kmeans$cluster)
+qplot(연령대_20_매출_금액, 분기당_매출_금액,colour = cluster, data = datav2)
+```
+# 군집이 3개일 경우 시드에 따른 clustering 결과 차이 파악
+# 위에서 차이가 나지 않아 단순 비교를 위한 것
+```{r}
+set.seed(1)
+datav2.kmeans <- kmeans(datav2[2:3], centers = 3, iter.max = 10000)
+datav2.kmeans$centers
+
+datav2$cluster.3 <- as.factor(datav2.kmeans$cluster)
+qplot(연령대_20_매출_금액, 분기당_매출_금액,colour = cluster.3, data = datav2)
+
+set.seed(2)
+datav2.kmeans <- kmeans(datav2[2:3], centers = 3, iter.max = 10000)
+datav2.kmeans$centers
+
+datav2$cluster.3 <- as.factor(datav2.kmeans$cluster)
+qplot(연령대_20_매출_금액, 분기당_매출_금액,colour = cluster.3, data = datav2)
+
+set.seed(3)
+datav2.kmeans <- kmeans(datav2[2:3], centers = 3, iter.max = 10000)
+datav2.kmeans$centers
+
+datav2$cluster.3 <- as.factor(datav2.kmeans$cluster)
+qplot(연령대_20_매출_금액, 분기당_매출_금액,colour = cluster.3, data = datav2)
+
+set.seed(4)
+datav2.kmeans <- kmeans(datav2[2:3], centers = 3, iter.max = 10000)
+datav2.kmeans$centers
+
+datav2$cluster.3 <- as.factor(datav2.kmeans$cluster)
+qplot(연령대_20_매출_금액, 분기당_매출_금액,colour = cluster.3, data = datav2)
+```
+
+# 2개로 했을 때 다시 군집 분석하여 특성 뽑기
+# 2개로 했을 경우 위에서 2번 군집에 대해서만 다시 나누기
+```{r}
+set.seed(1)
+datav2.kmeans <- kmeans(datav2[2:3], centers = 2, iter.max = 10000)
+datav2.kmeans$centers
+
+datav2$cluster <- as.factor(datav2.kmeans$cluster)
+```
+# 군집 2번에 대해서 subset을 만들고 다시 분석
+# 2개의 군집으로 나누는 것이 최적화
+```{r}
+datav2_cl2 <- subset(datav2, datav2$cluster == 2)
+
+# Determine K
+nc <- NbClust(datav2_cl2[2:3], min.nc=2, max.nc=15, method="kmeans")
+par(mfrow=c(1,1))
+barplot(table(nc$Best.n[1,]),
+        xlab="Numer of Clusters", ylab="Number of Criteria",
+        main="Number of Clusters Chosen")
+
+wssplot(datav2_cl2[2:3])
+```
+
+```{r}
+set.seed(1)
+datav2_cl2.kmeans <- kmeans(datav2_cl2[2:3], centers = 2, iter.max = 10000)
+datav2_cl2.kmeans$centers
+
+datav2_cl2$clusterv2 <- as.factor(datav2_cl2.kmeans$cluster)
+qplot(연령대_20_매출_금액, 분기당_매출_금액,colour = clusterv2, data = datav2_cl2)
+```
+# 각 군집에 속하는 포인트들 따로 확인
+```{r}
+View(subset(datav2_cl2, datav2_cl2$clusterv2 == 1))
+View(subset(datav2_cl2, datav2_cl2$clusterv2 == 2))
+```
+# 위 plot에서 군집 2에 속하는 데이터포인트들의 경우 상권의 규모가 큰편은 아니지만, 20대의 매출이 전체 규모에 비해서 높다고 판단할 수 있음
+# 군집 1에 속하는 상권(강남역, 노량진, 용산전자상가(용산역)) 상권의 경우 상권의 규모도 크지만, 상권의 매출에서 20대의 매출이 차지하는 비율이 매우 높은 상권이라고 할 수 있음. 
+
+# dbscan 군집화
+# 최적 eps 찾기
+```{r}
+dbscan::kNNdistplot(datav2[2:3], k=2)
+abline(h = 0.035, lty = 2)
+```
+# 위에서 2개의 군집으로 나누는 것이 좋으니 k=2일 때 기울기가 급격히 변하는 eps를 사용
+# minpoint의 경우 찾아보니 2차원 평면에서는 4개로 설정하는 것이 좋다고 함.
+```{r}
+set.seed(2022)
+db <- fpc::dbscan(data = datav2[2:3], eps=0.035, MinPts=4)
+db
+```
+# 군집화 결과 3개의 군집이 나옴. 이중 2번 군집만 따로 뽑아서 다시 분석
+
+```{r}
+db$cluster
+datav2$dbcluster <- db$cluster
+```
+# 결과 plot
+```{r}
+plot(db, datav2[2:3])
+```
+# 빨간 세모의 경우(1번 군집), 상권의 규모도 작고, 20대에게도 유명하지 않은 상권임을 알 수 있음
+# (검은 동그라미의) 0번 군집의 경우 섞여 있어 제대로된 군집화가 되었다고 보기 힘듦 --> 다시 뽑아서 군집화 실시
+
+# 2차 군집화에서 사용할 eps 다시 최적화
+# 기울기가 급격히 변하는 점 --> 0.143
+```{r}
+datav2_db2 <- subset(datav2 ,datav2$dbcluster == 0)
+
+dbscan::kNNdistplot(datav2_db2[2:3], k=2)
+abline(h = 0.143, lty = 2)
+```
+
+
+```{r}
+set.seed(2022)
+dbv2 <- fpc::dbscan(data = datav2_db2[2:3], eps=0.143, MinPts=4)
+dbv2
+```
+
+```{r}
+dbv2$cluster
+datav2_db2$dbcluster <- dbv2$cluster
+```
+
+```{r}
+plot(dbv2, datav2_db2[2:3])
+```
+# 여기서 0번 군집(검은 동그라미) -> 규모가 큰 상권이면서 동시에 20대에게도 유명한 상권
+# 2번 군집(초록색) -> 규모가 크지만 20대에게는 0번에 비하여 인지도가 없는 상권
+# 1번 군집(빨간색) -> 규모도 비교적 적고, 20대에게 인지도가 적은 상권
+```{r}
+View(subset(datav2_db2, datav2_db2$dbcluster == 0))
+View(subset(datav2_db2, datav2_db2$dbcluster == 1))
+View(subset(datav2_db2, datav2_db2$dbcluster == 2))
+```
+

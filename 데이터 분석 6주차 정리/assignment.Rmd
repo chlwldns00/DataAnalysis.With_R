@@ -1,0 +1,362 @@
+---
+title: "assignment"
+author: "김현재"
+date: '2022 4 10 '
+output:
+  html_document: default
+  pdf_document: default
+---
+# 과제 목표
+1. 클래스별 독립성과 일반 독립성 차이 확인  
+2. 나이브 베이지안 정확성 확인  
+3. 나이브 베이지안에서 영향을 많이 주는 요인  
+
+###데이터 리셋
+
+```{r reset,include=FALSE}
+options(warn=-1)
+
+rm(list=ls())
+
+library("gmodels")
+library(tidyverse)
+library(ggplot2)
+library(gplots)
+library(caret)
+library("caretEnsemble")
+library(psych)
+library("Amelia")
+library("mice")
+library("GGally")
+library(rpart)
+library(readr)
+library(readxl)
+library("randomForest")
+library("klaR") # for NaiveBayes (=nb) function
+```
+
+## 데이터 불러오기
+
+```{r load data}
+data <- read_excel("data_sort.xlsx")
+```
+
+## 데이터 탐색
+
+```{r}
+
+str(data)
+summary(data)
+head(data)
+
+```
+
+## 데이터 전처리
+
+```{r}
+data = data[, -1]
+data = na.omit(data)
+data = data[!(data$Age == "NA"), ]
+data = data[!(data$Sex == "NA"), ]
+data = data[!(data$Smoke == "NA"), ]
+data = data[!(data$Drink == "NA"), ]
+data = data[!(data$Walking == "NA"), ]
+data = data[!(data$Age == "NA"), ]
+data = data[!(data$High_blood_pressure == "NA"), ]
+
+data_all <- data
+#data<- data[seq(1,1500),]
+
+data_df = data.frame(Age = as.numeric(data$Age),
+                  Sex = as.factor(data$Sex),
+                  Smoke = as.numeric(data$Smoke),
+                  Drink = as.factor(data$Drink),
+                  Walking = as.factor(data$Walking),
+                  Exercise = as.factor(data$Exercise),
+                  High_blood_pressure = as.factor(data$High_blood_pressure))
+
+data_df_all = data.frame(Age = as.numeric(data_all$Age),
+                  Sex = as.factor(data_all$Sex),
+                  Smoke = as.numeric(data_all$Smoke),
+                  Drink = as.factor(data_all$Drink),
+                  Walking = as.factor(data_all$Walking),
+                  Exercise = as.factor(data_all$Exercise),
+                  High_blood_pressure = as.factor(data_all$High_blood_pressure))
+
+summary(data_df_all)
+```
+
+나이브 베이지만은 독립성을 보장해야 하기 때문에 예측변수들끼리의 독립성 검증  
+일단은 클래스별이 아닌 그냥 독립성을 검정해서 베이지만 모델을 만들어보자  
+# 1. 일반 독립성 검정을 통한 나이브 베이지안
+
+### 1)수치형 변수들끼리의 상관계수 검증(cor 활용) - [AGe,Smoke]
+
+```{r}
+cor(data_df$Age,data_df$Smoke)  #-0.0755408
+
+```
+
+### 2) 명목형 변수끼리의 독립성 검증( chisq.test 활용) - [High_blood_pressure,Drink,Walking,Exercise]
+```{r}
+print(chisq.test(data_df$High_blood_pressure,data_df$Drink))        # 8.153e-12
+print(chisq.test(data_df$High_blood_pressure,data_df$Walking))      # 0.01673
+print(chisq.test(data_df$High_blood_pressure,data_df$Exercise))     # 4.475e-06
+print(chisq.test(data_df$Drink,data_df$Walking))                    # 0.8999
+print(chisq.test(data_df$Drink,data_df$Exercise))                   # 0.1523
+print(chisq.test(data_df$Walking,data_df$Exercise))                 # 2.2e-16 
+```
+
+### 3) 명목형 - 수치형 변수끼리의 독립성 검증(aov 활용) -[Age:(sex,drink,walking,exercise)],[Smoke:(sex,drink,walking,exercise)]
+
+```{r}
+
+summary(aov(Age~High_blood_pressure,data=data_df))  # 2e-16
+summary(aov(Age~Drink,data=data_df))          # 1.9e-15
+summary(aov(Age~Walking,data=data_df))        # 0.00036
+summary(aov(Age~Exercise,data=data_df))       # 5.37e-15
+
+summary(aov(Smoke~High_blood_pressure,data=data_df))   #0.00209  
+summary(aov(Smoke~Drink,data=data_df))        # 2e-16
+summary(aov(Smoke~Walking,data=data_df))      # 0.00904   
+summary(aov(Smoke~Exercise,data=data_df))     # 0.166
+
+
+```
+
+
+
+### 결과 : age,drink,blood는 서로 독립이니 세개 선택  
+
+## 나이즈 베이지안 모델 생성(독립적인 예측변수들만 포함)  
+```{r}
+data_for_naize_standard_all <- data.frame(
+  Drink = as.factor(data_df_all$Drink),
+  Walking = as.factor(data_df_all$Walking),
+  Sex = as.factor(data_df_all$Sex))
+
+# train_data, test_data
+indexes = createDataPartition(data_for_naize_standard_all$Sex, p = .4, list = F) 
+train_data <- data_for_naize_standard_all[indexes,]  
+test_data <- data_for_naize_standard_all[-indexes,]  
+
+# 모델 생성 및 평가  
+nb_fit_standard <- train(data_for_naize_standard_all[,-3],data_for_naize_standard_all$Sex,'nb' ,trControl = trainControl(method = 'cv',number = 10))  
+nb_predict_standard <- predict(nb_fit_standard, newdata = data_for_naize_standard_all) 
+cm_stndard <- table(nb_predict_standard, data_for_naize_standard_all$Sex)  
+confusionMatrix(cm_stndard)  
+```
+
+ 
+
+## 나이즈 베이지안(종속적인 예측변수들끼리 모델 구현)
+
+```{r}
+data_for_naize_standard_all <- data.frame(
+  Smoke = as.numeric(data_df_all$Smoke),
+  Drink = as.factor(data_df_all$Drink),
+  Sex = as.factor(data_df_all$Sex))
+
+# train_data, test_data
+indexes = createDataPartition(data_for_naize_standard_all$Sex, p = .4, list = F) 
+train_data <- data_for_naize_standard_all[indexes,]
+test_data <- data_for_naize_standard_all[-indexes,]
+
+# 모델 생성 및 평가
+nb_fit_standard <- train(data_for_naize_standard_all[,-3],data_for_naize_standard_all$Sex,'nb' ,trControl = trainControl(method = 'cv',number = 10))
+nb_predict_standard <- predict(nb_fit_standard, newdata = data_for_naize_standard_all)
+cm_stndard <- table(nb_predict_standard, data_for_naize_standard_all$Sex)
+confusionMatrix(cm_stndard)
+```
+
+
+# 2.나이즈 베이지안 모델 생성(모든 예측변수 대입) 
+```{r}
+# train_data, test_data
+indexes = createDataPartition(data_df_all$Sex, p = .4, list = F) 
+train_data_all <- data_df_all[indexes,]
+test_data_all <- data_df_all[-indexes,]
+
+# 모델 생성 및 평가
+nb_fit_all <- train(data_df[,-2],data_df$Sex,'nb' ,trControl = trainControl(method = 'cv',number = 10))
+nb_predict_all <- predict(nb_fit_all, newdata = data_df)
+cm_all <- table(nb_predict_all, data_df$Sex)
+confusionMatrix(cm_all)
+
+```
+
+# 3. class별 독립성 검정을 통한 나이브 베이지안(클래스별 독립성이 일반 독립성이랑 비슷)  
+### 원래는 차이가 나면 따로 만들어서 할려고 했지만 비슷하기에 여기선 상관이 많은 변수들끼리 묶어서 성능 평가해보자  
+
+### 클래스 나누기  
+
+```{r}
+summary(data_df$Sex)
+
+data_class1 = data_df[data_df$Sex == "female",]
+data_class2 = data_df[data_df$Sex == "male",]
+```
+
+### 클래스 별 독립성 검정
+age는 factor요소가 아니니 제외하고 생각한다.  
+#### 1) class1 독립성 검정(female)
+```{r}
+print(chisq.test(data_class1$High_blood_pressure,data_class1$Drink))        # 0.1456
+print(chisq.test(data_class1$High_blood_pressure,data_class1$Walking))      # 0.02782
+print(chisq.test(data_class1$High_blood_pressure,data_class1$Exercise))     # 0.0001589
+print(chisq.test(data_class1$Drink,data_class1$Walking))    # 0.004549
+print(chisq.test(data_class1$Drink,data_class1$Exercise))   # 0.5508
+print(chisq.test(data_class1$Walking,data_class1$Exercise)) # 2.2e-16
+
+summary(aov(Smoke~High_blood_pressure,data=data_class1))          # 0.00512
+summary(aov(Smoke~Drink,data=data_class1))        # 2e-16
+summary(aov(Smoke~Walking,data=data_class1))      # 0.0914
+summary(aov(Smoke~Exercise,data=data_class1))     # 0.948
+
+summary(aov(Age~High_blood_pressure,data=data_class1))#2e-16
+summary(aov(Age~Drink,data=data_class1))        #2e-16
+summary(aov(Age~Walking,data=data_class1))      #0.0101
+summary(aov(Age~Exercise,data=data_class1))     #1.96e-09
+
+```
+
+#### 2) class2 독립성 검정(male)
+
+```{r}
+print(chisq.test(data_class2$High_blood_pressure,data_class2$Drink))  #1.244e-10
+print(chisq.test(data_class2$High_blood_pressure,data_class2$Walking))  #0.367
+print(chisq.test(data_class2$High_blood_pressure,data_class2$Exercise)) #8.097e-06
+print(chisq.test(data_class2$Drink,data_class2$Walking))    # 0.03268
+print(chisq.test(data_class2$Drink,data_class2$Exercise))   # 0.02896
+print(chisq.test(data_class2$Walking,data_class2$Exercise)) # 2.2e-16
+
+summary(aov(Smoke~High_blood_pressure,data=data_class2)) #0.841
+summary(aov(Smoke~Drink,data=data_class2))        # 2e-16
+summary(aov(Smoke~Walking,data=data_class2))      # 00.00622
+summary(aov(Smoke~Exercise,data=data_class2))     # 1.71e-09
+
+summary(aov(Age~High_blood_pressure,data=data_class2)) #2e-16
+summary(aov(Age~Drink,data=data_class2))        #0.000561
+summary(aov(Age~Walking,data=data_class2))      #0.015
+summary(aov(Age~Exercise,data=data_class2))     #1.99e-06
+```
+
+## 나이즈 베이지안 모델 생성(여자 독립성 있는 예측변수들만 포함)  
+```{r}
+data_for_naize_standard_all <- data.frame(
+  Smoke = as.numeric(data_df_all$Smoke),
+  High_blood_pressure = as.factor(data_df_all$High_blood_pressure),
+  Exercise = as.factor(data_df_all$Exercise),
+  Sex = as.factor(data_df_all$Sex))
+
+# train_data, test_data
+indexes = createDataPartition(data_for_naize_standard_all$Sex, p = .4, list = F) 
+train_data <- data_for_naize_standard_all[indexes,]  
+test_data <- data_for_naize_standard_all[-indexes,]  
+
+# 모델 생성 및 평가  
+nb_fit_standard <- train(data_for_naize_standard_all[,-4],data_for_naize_standard_all$Sex,'nb' ,trControl = trainControl(method = 'cv',number = 10))  
+nb_predict_standard <- predict(nb_fit_standard, newdata = data_for_naize_standard_all) 
+cm_stndard <- table(nb_predict_standard, data_for_naize_standard_all$Sex)  
+confusionMatrix(cm_stndard)  
+```
+
+ 
+
+## 나이즈 베이지안(남자 독립성 있는 예측변수들끼리 모델 구현)
+
+```{r}
+data_for_naize_standard_all <- data.frame(
+  Smoke = as.numeric(data_df_all$Smoke),
+  High_blood_pressure = as.factor(data_df_all$High_blood_pressure),
+  Walking = as.factor(data_df_all$Walking),
+  Sex = as.factor(data_df_all$Sex))
+
+# train_data, test_data
+indexes = createDataPartition(data_for_naize_standard_all$Sex, p = .4, list = F) 
+train_data <- data_for_naize_standard_all[indexes,]
+test_data <- data_for_naize_standard_all[-indexes,]
+
+# 모델 생성 및 평가
+nb_fit_standard <- train(data_for_naize_standard_all[,-4],data_for_naize_standard_all$Sex,'nb' ,trControl = trainControl(method = 'cv',number = 10))
+nb_predict_standard <- predict(nb_fit_standard, newdata = data_for_naize_standard_all)
+cm_stndard <- table(nb_predict_standard, data_for_naize_standard_all$Sex)
+confusionMatrix(cm_stndard)
+```
+
+
+#6. 교수님 파일 참고
+```{r}
+#create objects x which holds the predictor variables and y which holds the response variables
+x = data_df_all[,-2]
+y = data_df_all$Sex
+
+# optimize model 
+modelLookup("nb")
+
+# set up tune grid values
+fL <- seq(0, 1, 0.2)
+usekernel <- c(TRUE, FALSE)
+adjust <- seq(0, 2, 0.5)
+grid <- expand.grid(fL=fL, usekernel=usekernel, adjust=adjust)
+grid
+
+# optimization
+model = train(x,
+              y,
+              'nb',
+              trControl=trainControl(method='cv',number=10)
+              #,tuneGrid=grid
+              )
+model
+
+# Step 7: Model Evaluation
+
+#Model Evaluation
+#Predict testing set
+Predict <- predict(model,newdata = data_df_all ) 
+Predict
+
+#Get the confusion matrix to see accuracy value and other parameter values 
+confusionMatrix(Predict, data_df_all$Sex)
+```
+
+
+#7. 학습곡선
+```{r}
+set.seed(100)
+naive_acc <- c()
+naive_acc_train <-c()
+
+naive_acc_mean <-c()
+naive_acc_train_mean <-c()
+
+for(i in seq(0.1, 0.9, 0.1)){
+  for( j in seq(0,10,1)){
+    indxTrain <- createDataPartition(y = data_df_all$Sex ,p = i,list = FALSE)
+    training <- data_df_all[indxTrain,]
+    testing <- data_df_all[-indxTrain,]
+    
+    naive_model_T <- NaiveBayes(Sex ~Age+Walking+Drink+Smoke+High_blood_pressure+Exercise, data = training, userkernel=TRUE)
+    
+    naive_predict_test_T <- predict(naive_model_T, newdata= testing)
+    naive_predict_train_T <-predict(naive_model_T, newdata= training)
+    
+    naive_result_T <-confusionMatrix(naive_predict_test_T$class, testing$Sex)
+    naive_result_T_train <-confusionMatrix(naive_predict_train_T$class, training$Sex)
+    
+    naive_acc <-c(naive_acc,naive_result_T$overall["Accuracy"])
+    naive_acc_train <-c(naive_acc_train,naive_result_T_train$overall["Accuracy"])
+  }
+  naive_acc_mean <- c(naive_acc_mean,mean(naive_acc))
+  naive_acc_train_mean <- c(naive_acc_train_mean, mean(naive_acc_train))
+}
+
+naive_acc_mean
+
+plot(naive_acc_mean,type='o',col=4,ylim=c(0.65,0.75),xlab ="Rate", ylba = "ACC", main ="Leaning curve")
+lines(naive_acc_train_mean,type='o',col= 2)
+legend(7,0.68,c("train","test"),lwd=c(1,1),col=c("red","blue"))
+
+```
+
